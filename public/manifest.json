@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Udemy AI Course Summarizer",
+  "version": "1.0.0",
+  "description": "Turn Udemy course transcripts into structured, AI-generated study notes. Works fully client-side — configure your own AI provider, capture transcripts, and export to DOCX/PDF.",
+  "default_locale": null,
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_title": "Udemy AI Course Summarizer",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.udemy.com/course/*/learn/*", "https://*.udemy.com/course/*/learn/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options/index.html",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://www.udemy.com/*",
+    "https://*.udemy.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*"],
+      "matches": ["https://www.udemy.com/*", "https://*.udemy.com/*"]
+    }
+  ]
+}
