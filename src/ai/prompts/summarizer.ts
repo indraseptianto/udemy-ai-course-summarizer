@@ -41,6 +41,20 @@ function preferenceFlags(p: SummarizationPreferences): string {
     (off.length ? `- Omit unless naturally part of the source: ${off.join(', ')}.\n` : '');
 }
 
+function languageInstruction(lang: SummarizationPreferences['language']): string {
+  switch (lang) {
+    case 'id':
+      return 'Write ALL generated study notes (headings, explanations, terms, takeaways) in ' +
+        'Bahasa Indonesia, natural and clear. Keep technical terms, code, formulas and proper names as-is.';
+    case 'en':
+      return 'Write ALL generated study notes in English.';
+    case 'transcript':
+      return 'Write ALL generated study notes in the same language as the transcript itself.';
+    default:
+      return 'Write ALL generated study notes in Bahasa Indonesia.';
+  }
+}
+
 /**
  * Builds the full prompt sent to the AI provider for a single lesson summary.
  * Keeps source-fidelity rules explicit so the model does not hallucinate.
@@ -98,6 +112,7 @@ What the learner should be able to apply now.
 
 ${preferenceFlags(preferences)}
 ${STYLE_GUIDANCE[preferences.style]}
+${languageInstruction(preferences.language)}
 
 # Source fidelity — READ CAREFULLY
 - Summarize ONLY what appears in the TRANSCRIPT. Never invent facts, names, numbers, examples, or steps not in the source.
@@ -153,6 +168,7 @@ Key examples from the lessons.
 The most important things to remember.
 
 ${STYLE_GUIDANCE[input.preferences.style]}
+${languageInstruction(input.preferences.language)}
 
 # Source fidelity
 Synthesize ONLY from the lesson summaries provided. Do not add external facts. If you add background, label it "(Explanation, not in transcript)".

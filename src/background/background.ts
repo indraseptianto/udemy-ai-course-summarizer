@@ -49,6 +49,13 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
       case 'OPEN_COURSE_PAGE':
         await chrome.runtime.openOptionsPage();
         return { ok: true, data: { courseId: message.courseId } };
+      case 'OPEN_URL': {
+        const tab = await getActiveTab();
+        const tabId = message.tabId ?? tab?.id;
+        if (!tabId) return { ok: false, error: 'No active tab to navigate.' };
+        await chrome.tabs.update(tabId, { url: message.url, active: true });
+        return { ok: true, data: { navigatedTo: message.url } };
+      }
       default:
         return { ok: false, error: 'Unhandled message type.' };
     }

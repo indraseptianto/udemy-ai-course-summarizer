@@ -4,6 +4,7 @@ import type {
   ProviderId,
   ProviderSettings,
   SummarizationPreferences,
+  SummaryLanguage,
   SummaryStyle,
 } from '@/shared/types';
 import { PROVIDER_META } from '@/shared/types';
@@ -207,6 +208,17 @@ export function SettingsPage({ onSaved }: { onSaved?: () => void }) {
             <option value="detailed">Detailed</option>
             <option value="balanced">Balanced</option>
             <option value="concise">Concise</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Bahasa ringkasan (summary language)</label>
+          <select
+            value={settings.preferences.language}
+            onChange={(e) => updatePrefs({ language: e.target.value as SummaryLanguage })}
+          >
+            <option value="id">Bahasa Indonesia</option>
+            <option value="en">English</option>
+            <option value="transcript">Ikuti bahasa transkrip</option>
           </select>
         </div>
         <div className="field">

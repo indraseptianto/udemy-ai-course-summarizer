@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Udemy AI Course Summarizer",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Turn Udemy course transcripts into structured, AI-generated study notes. Works fully client-side — configure your own AI provider, capture transcripts, and export to DOCX/PDF.",
   "icons": {
     "16": "icons/icon16.png",

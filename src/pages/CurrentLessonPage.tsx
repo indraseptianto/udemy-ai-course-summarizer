@@ -1,30 +1,42 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ActiveLessonInfo } from '@/shared/messages';
-import { fetchActiveLesson } from '@/utils/messaging';
+import { fetchActiveLesson, openUrlInTab } from '@/utils/messaging';
 import type { LessonRef } from '@/storage/sync';
 import {
   ensureLessonForCapture,
   setLessonTranscript,
   setLessonSummary,
+  markLessonStatus,
 } from '@/storage/sync';
-import { getLesson, listChapters } from '@/storage/db';
+import { getLesson, listChapters, listLessons, recomputeCourseProgress } from '@/storage/db';
 import { rawToSegments } from '@/utils/transcript';
 import { loadSettings } from '@/storage/settings';
-import { summarizeLessonToCompletion } from '@/utils/summarizeHelpers';
+import { summarizeLesson } from '@/ai/summarizer';
 import { StatusBadge, ProgressBar } from '@/components/Progress';
 import { MarkdownView } from '@/components/Markdown';
-import type { Lesson } from '@/shared/types';
+import type { Chapter, Lesson } from '@/shared/types';
+
+interface OrderedLesson {
+  chapter: Chapter;
+  lesson: Lesson;
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export function CurrentLessonPage() {
   const [info, setInfo] = useState<ActiveLessonInfo | null>(null);
   const [ref, setRef] = useState<LessonRef | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
-  const [busy, setBusy] = useState<'detect' | 'capture' | 'summarize' | null>(null);
+  const [busy, setBusy] = useState<'detect' | 'capture' | 'summarize' | 'navigate' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pastedRaw, setPastedRaw] = useState('');
-  const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState('');
+  const [showDraft, setShowDraft] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [nextLesson, setNextLesson] = useState<Lesson | null>(null);
   const [chunkProgress, setChunkProgress] = useState<{ done: number; total: number } | null>(null);
 
   const reloadLesson = useCallback(async (lessonId: string) => {
@@ -32,21 +44,37 @@ export function CurrentLessonPage() {
     if (l) setLesson(l);
   }, []);
 
-  const detect = useCallback(async (capture: boolean) => {
-    setBusy('detect');
-    setError(null);
-    const active = await fetchActiveLesson();
-    setInfo(active);
-    if (active && active.isUdemyLesson && (capture ? true : active.hasTranscript)) {
-      const r = await ensureLessonForCapture(active);
-      if (r) {
-        setRef(r);
-        await reloadLesson(r.lesson.id);
-        if (capture) setBusy('capture');
-      }
+  /** Build the ordered lesson list for the whole course to find "next". */
+  const loadOrdered = useCallback(async (courseId: string, currentLessonId: string) => {
+    const chapters = await listChapters(courseId);
+    const ordered: OrderedLesson[] = [];
+    for (const ch of chapters) {
+      const lessons = await listLessons(ch.id);
+      for (const l of lessons) ordered.push({ chapter: ch, lesson: l });
     }
-    setBusy(null);
-  }, [reloadLesson]);
+    const idx = ordered.findIndex((o) => o.lesson.id === currentLessonId);
+    setNextLesson(idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1].lesson : null);
+  }, []);
+
+  const detect = useCallback(
+    async (capture: boolean) => {
+      setBusy('detect');
+      setError(null);
+      const active = await fetchActiveLesson();
+      setInfo(active);
+      if (active && active.isUdemyLesson && (capture ? true : active.hasTranscript)) {
+        const r = await ensureLessonForCapture(active);
+        if (r) {
+          setRef(r);
+          await reloadLesson(r.lesson.id);
+          await loadOrdered(r.course.id, r.lesson.id);
+          if (capture) setBusy('capture');
+        }
+      }
+      setBusy(null);
+    },
+    [reloadLesson, loadOrdered],
+  );
 
   useEffect(() => {
     void detect(false);
@@ -57,7 +85,7 @@ export function CurrentLessonPage() {
     setError(null);
     const segments = rawToSegments(pastedRaw);
     if (segments.length === 0) {
-      setError('No transcript lines detected. Paste caption text (with or without timestamps).');
+      setError('Tidak ada baris transkrip terdeteksi. Tempel teks caption (dengan/tanpa timestamp).');
       return;
     }
     const text = segments.map((s) => s.text).join('\n');
@@ -67,159 +95,246 @@ export function CurrentLessonPage() {
     setPastedRaw('');
   }
 
-  async function handleSummarize() {
+  async function handleGenerate() {
     if (!ref) return;
     setError(null);
     setChunkProgress(null);
     const settings = await loadSettings();
     if (!settings.provider.apiKey) {
-      setError('No API key configured. Open Settings and configure a provider first.');
+      setError('API key belum diisi. Buka Settings dan konfigurasi provider dulu.');
+      return;
+    }
+    const text = (lesson?.transcript ?? '').trim();
+    if (!text) {
+      setError('Transkrip masih kosong. Capture atau tempel transkrip dulu.');
       return;
     }
     const chapters = await listChapters(ref.course.id);
     const chapter = chapters.find((c) => c.id === ref.chapter.id);
     setBusy('summarize');
-    const res = await summarizeLessonToCompletion(
-      ref.lesson.id,
-      settings.provider,
-      settings.preferences,
-      { chapterTitle: chapter?.title, courseTitle: ref.course.title },
-      (done, total) => setChunkProgress({ done, total }),
-    );
-    setBusy(null);
-    if (!res.ok) {
-      setError(res.error ?? 'Summarization failed.');
-    } else {
-      setDraft(res.summary ?? '');
+    await markLessonStatus(ref.lesson.id, 'processing');
+    try {
+      const result = await summarizeLesson(text, {
+        provider: settings.provider,
+        preferences: settings.preferences,
+        lessonTitle: ref.lesson.title,
+        chapterTitle: chapter?.title,
+        courseTitle: ref.course.title,
+        onChunk: (done, total) => setChunkProgress({ done, total }),
+      });
+      setDraft(result.text);
+      setShowDraft(true);
+      setEditMode(false);
+      await markLessonStatus(ref.lesson.id, 'transcript_captured');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await markLessonStatus(ref.lesson.id, 'failed', message);
+      setError(`Gagal generate ringkasan: ${message}`);
+    } finally {
+      setBusy(null);
     }
     await reloadLesson(ref.lesson.id);
+    await recomputeCourseProgress(ref.course.id);
   }
 
-  async function handleSaveEdits() {
-    if (!ref) return;
+  async function handleSave() {
+    if (!ref || !draft.trim()) return;
+    setError(null);
     await setLessonSummary(ref.lesson.id, draft, 'completed');
-    setEditOpen(false);
+    await recomputeCourseProgress(ref.course.id);
+    setShowDraft(false);
     await reloadLesson(ref.lesson.id);
   }
 
-  const lessonTitle = lesson?.title || info?.lessonTitle || 'Current Lesson';
-  const courseTitle = ref?.course.title || info?.courseTitle || 'Course';
+  async function handleNext() {
+    if (!nextLesson?.url) return;
+    setError(null);
+    setBusy('navigate');
+    await openUrlInTab(nextLesson.url);
+    // Wait for the tab to land on the next lesson, polling until detected.
+    const target = nextLesson.url;
+    for (let i = 0; i < 14; i++) {
+      await sleep(1200);
+      const active = await fetchActiveLesson();
+      if (active?.url === target) {
+        const r = await ensureLessonForCapture(active);
+        if (r) {
+          setRef(r);
+          await reloadLesson(r.lesson.id);
+          await loadOrdered(r.course.id, r.lesson.id);
+        }
+        break;
+      }
+    }
+    setBusy(null);
+  }
+
+  const lessonTitle = lesson?.title || info?.lessonTitle || 'Materi saat ini';
+  const courseTitle = ref?.course.title || info?.courseTitle || 'Kursus';
 
   return (
     <div>
-      <h2>Current Lesson</h2>
-
-      <div className="card mb">
-        <div className="row">
-          <div className="grow">
+      <div className="card lesson-hero">
+        <div className="row" style={{ justifyContent: 'space-between', gap: 12 }}>
+          <div>
             <div className="small muted">{courseTitle}</div>
-            <strong>{lessonTitle}</strong>
+            <h2 style={{ margin: '4px 0 0' }}>{lessonTitle}</h2>
           </div>
           {lesson && <StatusBadge status={lesson.status} />}
         </div>
 
-        {busy === 'detect' && <p className="muted small mt">Detecting Udemy transcript…</p>}
+        {busy === 'detect' && <p className="muted small mt">Mendeteksi transkrip Udemy…</p>}
 
         {error && <div className="alert error mt">{error}</div>}
 
-        <div className="row mt wrap">
-          <button type="button" className="primary" disabled={busy !== null} onClick={() => void detect(true)}>
-            🎬 Capture Transcript
+        <div className="row mt wrap" style={{ marginTop: 16 }}>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy !== null}
+            onClick={() => void detect(true)}
+            title="Ambil transkrip dari materi yang sedang dibuka"
+          >
+            🎬 Capture Transkrip
           </button>
           <button type="button" disabled={busy !== null} onClick={() => { setPasteOpen((v) => !v); setError(null); }}>
-            ⌨️ Paste Transcript
+            ⌨️ Tempel Transkrip
           </button>
-          {lesson && lesson.status !== 'completed' && (
+          <button
+            type="button"
+            className="success"
+            disabled={busy !== null || !lesson?.transcript?.trim()}
+            onClick={handleGenerate}
+            title="Buat ringkasan belajar (bahasa Indonesia)"
+          >
+            {busy === 'summarize' ? <span className="spin" /> : '✨ Generate Ringkasan (ID)'}
+          </button>
+          {showDraft && (
             <button
               type="button"
-              className="success"
-              disabled={busy !== null || !lesson.transcript?.trim()}
-              onClick={handleSummarize}
+              className="primary"
+              disabled={busy !== null || !draft.trim()}
+              onClick={handleSave}
             >
-              {busy === 'summarize' ? <span className="spin" /> : '✨ Summarize'}
+              💾 Simpan
             </button>
           )}
           {lesson?.status === 'failed' && (
-            <button type="button" disabled={busy !== null} onClick={handleSummarize}>
-              ⟳ Retry
+            <button type="button" disabled={busy !== null} onClick={handleGenerate}>
+              ⟳ Coba Lagi
             </button>
           )}
-          {lesson?.summary && (
-            <button type="button" disabled={busy !== null} onClick={() => { setDraft(lesson.summary ?? ''); setEditOpen((v) => !v); }}>
-              ✏️ Edit Summary
-            </button>
-          )}
+          <button
+            type="button"
+            className="ghost next-materi"
+            disabled={busy !== null || !nextLesson?.url}
+            onClick={handleNext}
+            title={nextLesson ? `Lanjut ke: ${nextLesson.title}` : 'Tidak ada materi berikutnya di kursus ini'}
+          >
+            {busy === 'navigate' ? <span className="spin" /> : 'Next Materi →'}
+          </button>
         </div>
+
+        {busy === 'navigate' && (
+          <p className="muted small mt">
+            Membuka materi berikutnya… <em>{nextLesson?.title}</em>
+          </p>
+        )}
 
         {!info?.isUdemyLesson && (
           <div className="alert warn mt">
-            Not on a Udemy lesson page right now. Open a lesson (a URL like
-            <span className="mono"> udemy.com/course/…/learn/…</span>) or paste a transcript manually.
+            Belum ada materi Udemy yang terbuka. Buka satu lesson (URL{' '}
+            <span className="mono">udemy.com/course/…/learn/…</span>) atau tempel transkrip manual.
           </div>
         )}
       </div>
 
       {pasteOpen && (
         <div className="card mb">
-          <h3>Paste Transcript Manually</h3>
+          <h3>Tempel Transkrip Manual</h3>
           <textarea
-            rows={8}
+            rows={7}
             placeholder={'[00:01] Welcome to the course.\n[00:04] Today we learn about APIs.'}
             value={pastedRaw}
             onChange={(e) => setPastedRaw(e.target.value)}
           />
           <div className="row mt">
             <button type="button" className="primary" onClick={handlePasteApply} disabled={!pastedRaw.trim()}>
-              Apply Transcript
+              Terapkan Transkrip
             </button>
             <button type="button" className="ghost" onClick={() => setPasteOpen(false)}>
-              Cancel
+              Batal
             </button>
           </div>
         </div>
       )}
 
-      <div className="row mb wrap" style={{ gap: 8 }}>
+      <div className="row lesson-cols">
         <div className="card grow">
-          <h3>Original Transcript {lesson?.transcriptSegments?.length ? `(${lesson.transcriptSegments.length} lines)` : ''}</h3>
+          <h3>
+            Transkrip Asli {lesson?.transcriptSegments?.length ? `(${lesson.transcriptSegments.length} baris)` : ''}
+          </h3>
           {lesson?.transcript ? (
-            <pre style={{ maxHeight: 260, overflow: 'auto' }}>{lesson.transcript}</pre>
+            <pre className="transcript-box">{lesson.transcript}</pre>
           ) : (
-            <p className="muted">No transcript captured yet.</p>
+            <p className="muted">Belum ada transkrip. Tekan Capture atau Tempel.</p>
+          )}
+          {lesson?.transcript && (
+            <button
+              className="copy-btn"
+              onClick={() => void navigator.clipboard?.writeText(lesson?.transcript ?? '')}
+            >
+              Salin transkrip
+            </button>
           )}
         </div>
+
         <div className="card grow">
-          <h3>AI Summary</h3>
+          <h3>Ringkasan AI</h3>
           {chunkProgress && (
             <div className="mb">
-              <div className="small muted mb">Summarizing chunk {chunkProgress.done}/{chunkProgress.total}…</div>
+              <div className="small muted mb">Meringkas bagian {chunkProgress.done}/{chunkProgress.total}…</div>
               <ProgressBar value={chunkProgress.done / chunkProgress.total} />
             </div>
           )}
-          {editOpen ? (
-            <>
-              <textarea rows={12} value={draft} onChange={(e) => setDraft(e.target.value)} />
-              <div className="row mt">
-                <button type="button" className="success" onClick={handleSaveEdits} disabled={!draft.trim()}>
-                  Save Edits
-                </button>
-                <button type="button" className="ghost" onClick={() => setEditOpen(false)}>
-                  Cancel
-                </button>
+
+          {showDraft ? (
+            <div className="draft-area">
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                <span className="small muted">Klik <strong>Simpan</strong> untuk menyimpan hasil.</span>
+                <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: 'auto' }}
+                    checked={editMode}
+                    onChange={(e) => setEditMode(e.target.checked)}
+                  />
+                  Mode edit
+                </label>
               </div>
-            </>
+              {editMode ? (
+                <textarea rows={14} className="summary-edit" value={draft} onChange={(e) => setDraft(e.target.value)} />
+              ) : (
+                <div className="summary-preview">
+                  <MarkdownView markdown={draft} />
+                </div>
+              )}
+            </div>
           ) : lesson?.summary ? (
-            <>
+            <div className="draft-area">
               <MarkdownView markdown={lesson.summary} />
               <button
-                className="copy-btn"
-                onClick={() => { void navigator.clipboard?.writeText(lesson.summary ?? ''); }}
+                className="copy-btn mt"
+                onClick={() => void navigator.clipboard?.writeText(lesson?.summary ?? '')}
               >
-                Copy summary
+                Salin ringkasan
               </button>
-            </>
+            </div>
           ) : (
-            <p className="muted">No summary yet. Capture a transcript and press Summarize.</p>
+            <p className="muted">
+              Belum ada ringkasan. Tekan <strong>Generate Ringkasan</strong> untuk membuat catatan belajar
+              berbahasa Indonesia.
+            </p>
           )}
         </div>
       </div>

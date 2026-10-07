@@ -21,7 +21,8 @@ export type RuntimeMessage =
       };
     }
   | { type: 'OPEN_OPTIONS' }
-  | { type: 'OPEN_COURSE_PAGE'; courseId: string };
+  | { type: 'OPEN_COURSE_PAGE'; courseId: string }
+  | { type: 'OPEN_URL'; url: string; tabId?: number };
 
 export interface ActiveLessonInfo {
   isUdemyLesson: boolean;

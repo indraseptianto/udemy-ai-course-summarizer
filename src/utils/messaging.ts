@@ -21,3 +21,9 @@ export async function fetchActiveLesson(): Promise<ActiveLessonInfo | null> {
   if (!res.ok || !res.data) return null;
   return res.data;
 }
+
+/** Navigate the active (Udemy) tab to another lesson URL. */
+export async function openUrlInTab(url: string, tabId?: number): Promise<boolean> {
+  const res = await sendToBackground<{ navigatedTo: string }>({ type: 'OPEN_URL', url, tabId });
+  return res.ok;
+}

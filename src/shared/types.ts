@@ -55,8 +55,12 @@ export interface Lesson {
 
 export type SummaryStyle = 'detailed' | 'balanced' | 'concise';
 
+/** Language the generated study notes should be written in. */
+export type SummaryLanguage = 'id' | 'en' | 'transcript';
+
 export interface SummarizationPreferences {
   style: SummaryStyle;
+  language: SummaryLanguage;
   preserveExamples: boolean;
   preserveCode: boolean;
   includeTimestamps: boolean;
@@ -92,6 +96,7 @@ export interface AppSettings {
 
 export const DEFAULT_PREFERENCES: SummarizationPreferences = {
   style: 'detailed',
+  language: 'id',
   preserveExamples: true,
   preserveCode: true,
   includeTimestamps: false,
