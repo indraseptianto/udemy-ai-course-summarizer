@@ -1,6 +1,6 @@
 {
   "name": "udemy-ai-course-summarizer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Production-ready Chrome/Brave extension that converts Udemy course transcripts into structured, AI-summarized study notes.",
   "private": true,
   "type": "module",

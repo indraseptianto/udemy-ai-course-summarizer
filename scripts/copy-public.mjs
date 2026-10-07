@@ -2,7 +2,7 @@
  * Copies public/ fragments (manifest.json + icons) into dist/ after the Vite
  * build so the final dist/ is a directly loadable extension directory.
  */
-import { cpSync, mkdirSync, readdirSync, statSync, existsSync, renameSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, statSync, existsSync, renameSync, rmSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,5 +36,43 @@ for (const page of ['popup', 'options']) {
 }
 // Remove the now-empty dist/src remainder.
 rmSync(join(distDir, 'src'), { recursive: true, force: true });
+
+// Validate the manifest so a misconfigured extension never ships (e.g. the
+// earlier "default_locale: null" bug that Chrome rejects at load time).
+{
+  const manifestPath = join(distDir, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const errors = [];
+  if (manifest.manifest_version !== 3) errors.push('manifest_version must be 3');
+  if (!manifest.name || typeof manifest.name !== 'string') errors.push('name must be a non-empty string');
+  if (!manifest.version || typeof manifest.version !== 'string') errors.push('version must be a string');
+  if ('default_locale' in manifest && !fsHasLocales(publicDir)) {
+    errors.push("'default_locale' is set but there is no _locales/ directory; remove it or add _locales");
+  }
+  for (const ref of Object.values(manifest.icons ?? {})) {
+    if (!existsSync(join(distDir, ref))) errors.push(`icon missing: ${ref}`);
+  }
+  if (manifest.action?.default_icon) {
+    for (const ref of Object.values(manifest.action.default_icon)) {
+      if (!existsSync(join(distDir, ref))) errors.push(`action icon missing: ${ref}`);
+    }
+  }
+  if (manifest.background?.service_worker && !existsSync(join(distDir, manifest.background.service_worker))) {
+    errors.push(`service worker missing: ${manifest.background.service_worker}`);
+  }
+  if (errors.length > 0) {
+    console.error('Manifest validation FAILED:\n - ' + errors.join('\n - '));
+    process.exit(1);
+  }
+  console.log('manifest validation OK');
+}
+
+function fsHasLocales(dir) {
+  try {
+    return statSync(join(dir, '_locales')).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 console.log('Public assets copied to dist/.');
